@@ -25,7 +25,7 @@ ALL_COLUMNS = [
     "Lead Source", "Salesperson Name", "Lead Status", "Last Contacted", "Interaction Summary", "Next Follow-up"
 ]
 
-# 🗺️ MAXIMUM COVERS GEOFENCES (Set to a massive 15,000m radius globally across all targets)
+# 🗺️ 15KM RADIUS GEOFENCES FOR PERFECT COORDINATE TARGETING
 NEIGHBORHOOD_CONFIG = {
     # --- HYDERABAD ---
     "Ameerpet": {"lat": 17.4375, "lng": 78.4482, "radius": 15000.0},
@@ -219,7 +219,7 @@ df = load_data()
 
 def get_places_new_v2_leads(api_key, city, area, limit):
     leads = []
-    # 🎯 FIX PATH ROUTING: Set URL path matching true Text Search endpoint
+    # 🎯 SYNCHRONIZED ENDPOINT: Point directly to the core generic search matrix path
     url = "https://google-map-places-new-v2.p.rapidapi.com/v1/places:searchText"
     
     headers = {
@@ -229,16 +229,11 @@ def get_places_new_v2_leads(api_key, city, area, limit):
         "x-rapidapi-key": api_key
     }
     
+    # Simplified search context ensuring compatibility across the rapid gateway
     payload = {
-        "textQuery": f"establishments to eat and drink in {area}, {city.split(' / ')[0]}",
+        "textQuery": f"restaurants cafes bars bakeries fast food in {area} {city.split(' / ')[0]}",
         "languageCode": "en",
-        "maxResultCount": int(limit),
-        # 🚀 COMPLETE UNRESTRICTED F&B TYPE MATRIX ARRAY
-        "includedTypes": [
-            "restaurant", "cafe", "bar", "coffee_shop", "bakery", 
-            "fast_food_restaurant", "ice_cream_shop", "sandwich_shop", 
-            "juice_shop", "pub", "night_club", "meal_takeaway", "food"
-        ]
+        "maxResultCount": int(limit)
     }
     
     if area in NEIGHBORHOOD_CONFIG:
