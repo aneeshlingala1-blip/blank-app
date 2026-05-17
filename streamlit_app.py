@@ -543,19 +543,21 @@ CITY_AREA_MAP = {
 MANAGER_PASSWORD = "APA@2024"
 
 FNB_ALL_TYPES = [
-    "restaurant", "cafe", "bar", "bakery", "pub", "night_club", "food_court",
-    "fast_food_restaurant", "coffee_shop", "meal_delivery", "meal_takeaway",
+    # Confirmed valid in Google Places (New) API Table A
+    "restaurant", "cafe", "bar", "bakery", "coffee_shop", "fast_food_restaurant",
+    "wine_bar", "ice_cream_shop", "juice_shop", "tea_house",
     "american_restaurant", "barbecue_restaurant", "brazilian_restaurant",
     "breakfast_restaurant", "brunch_restaurant", "chinese_restaurant",
     "french_restaurant", "greek_restaurant", "hamburger_restaurant",
-    "ice_cream_shop", "indian_restaurant", "indonesian_restaurant",
-    "italian_restaurant", "japanese_restaurant", "juice_shop",
-    "korean_restaurant", "lebanese_restaurant", "mediterranean_restaurant",
-    "mexican_restaurant", "middle_eastern_restaurant", "pizza_restaurant",
-    "ramen_restaurant", "sandwich_shop", "seafood_restaurant",
-    "spanish_restaurant", "steak_house", "sushi_restaurant", "tea_house",
-    "thai_restaurant", "turkish_restaurant", "vegan_restaurant",
-    "vegetarian_restaurant", "vietnamese_restaurant", "wine_bar",
+    "indian_restaurant", "indonesian_restaurant", "italian_restaurant",
+    "japanese_restaurant", "korean_restaurant", "lebanese_restaurant",
+    "mediterranean_restaurant", "mexican_restaurant", "middle_eastern_restaurant",
+    "pizza_restaurant", "ramen_restaurant", "sandwich_shop", "seafood_restaurant",
+    "spanish_restaurant", "steak_house", "sushi_restaurant", "thai_restaurant",
+    "turkish_restaurant", "vegan_restaurant", "vegetarian_restaurant",
+    "vietnamese_restaurant",
+    # Removed: pub, night_club, food_court, meal_delivery, meal_takeaway
+    # Not in Places (New) Table A — caused 400 INVALID_ARGUMENT
 ]
 
 TYPE_PRIORITY = ["restaurant", "cafe", "bar", "coffee_shop", "bakery",
@@ -983,6 +985,53 @@ with tab4:
     city_selected = st.selectbox("Target City", list(CITY_AREA_MAP.keys()))
     area_selected = st.selectbox("Neighbourhood", CITY_AREA_MAP[city_selected])
     st.caption("ℹ️ 16 nodes × 3 pages × 20 results = up to **960 unique venues** | up to **48 API calls** per harvest")
+
+    # ── API Connection Tester ──────────────────────────────────────────────────
+    with st.expander("🔧 Test API Connection (run this first if getting zero results)"):
+        if st.button("🧪 Run Single Node Test"):
+            test_key = st.secrets.get("RAPIDAPI_KEY", "")
+            if not test_key:
+                st.error("No RAPIDAPI_KEY found in secrets.")
+            else:
+                cfg = NEIGHBORHOOD_CONFIG.get(area_selected, {})
+                if cfg:
+                    test_url = "https://google-map-places-new-v2.p.rapidapi.com/v1/places:searchNearby"
+                    test_payload = {
+                        "includedTypes": ["restaurant", "cafe", "bar"],
+                        "maxResultCount": 3,
+                        "rankPreference": "DISTANCE",
+                        "locationRestriction": {
+                            "circle": {
+                                "center": {"latitude": cfg["lat"], "longitude": cfg["lng"]},
+                                "radius": 1500.0
+                            }
+                        },
+                        "languageCode": "en"
+                    }
+                    test_headers = {
+                        "content-type": "application/json",
+                        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress",
+                        "x-rapidapi-host": "google-map-places-new-v2.p.rapidapi.com",
+                        "x-rapidapi-key": test_key
+                    }
+                    try:
+                        r = requests.post(test_url, json=test_payload, headers=test_headers, timeout=15)
+                        st.markdown(f"**Status:** `{r.status_code}`")
+                        st.json(r.json())
+                        if r.status_code == 200:
+                            places = r.json().get("places", [])
+                            if places:
+                                st.success(f"✅ searchNearby works — returned {len(places)} results. Safe to run full harvest.")
+                            else:
+                                st.warning("⚠️ 200 OK but empty places array — searchNearby may not be in your subscription plan.")
+                        elif r.status_code == 403:
+                            st.error("❌ 403 Forbidden — searchNearby endpoint not included in your RapidAPI subscription. Upgrade plan or switch endpoint.")
+                        elif r.status_code == 400:
+                            st.error("❌ 400 Bad Request — payload rejected. See response above for details.")
+                        else:
+                            st.error(f"❌ Unexpected status {r.status_code}.")
+                    except Exception as e:
+                        st.error(f"Request failed: {e}")
 
     if st.button("🚀 Execute 16-Node Grid Crawl"):
         active_key = st.secrets.get("RAPIDAPI_KEY", "")
