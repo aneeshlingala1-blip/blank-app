@@ -5,6 +5,7 @@ import time
 import requests
 import pydeck as pdk
 from datetime import datetime
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, ColumnsAutoSizeMode
 
 if "RAPIDAPI_KEY" in st.secrets:
     os.environ["RAPIDAPI_KEY"] = st.secrets["RAPIDAPI_KEY"]
@@ -762,20 +763,41 @@ with tab1:
                 if col in display_df.columns:
                     display_df[col] = "🔒 Restricted"
 
-        st.dataframe(
-            display_df, use_container_width=True,
-            column_config={
-                "Restaurant Name": st.column_config.TextColumn("Establishment Name", pinned=True),
-                "Cuisine/Type":    st.column_config.TextColumn("Category"),
-                "Google Rating":   st.column_config.NumberColumn("Rating", format="⭐ %.1f"),
-                "Total Reviews":   st.column_config.NumberColumn("Reviews", format="%d"),
-                "Map Link":        st.column_config.LinkColumn("Map"),
-                "Website":         st.column_config.LinkColumn("Website"),
-                "Lead Status":     st.column_config.SelectboxColumn(
-                    "Status", options=["Cold Lead", "Warm Lead", "Sample Dropped",
-                                       "Tasting Scheduled", "Negotiation", "Active Client", "Lost Account"]
-                ),
-            }
+        gb = GridOptionsBuilder.from_dataframe(display_df)
+        gb.configure_default_column(
+            filter=True,
+            sortable=True,
+            resizable=True,
+            floatingFilter=True,   # filter row directly under headers, like Excel
+            minWidth=100,
+        )
+        # Column-specific filter types
+        gb.configure_column("Restaurant Name", pinned="left", minWidth=200,
+                            filter="agTextColumnFilter")
+        gb.configure_column("Cuisine/Type",    filter="agTextColumnFilter")
+        gb.configure_column("Zone/Area",       filter="agSetColumnFilter")
+        gb.configure_column("Lead Status",     filter="agSetColumnFilter")
+        gb.configure_column("Price Segment",   filter="agSetColumnFilter")
+        gb.configure_column("Google Rating",   filter="agNumberColumnFilter", type=["numericColumn"])
+        gb.configure_column("Total Reviews",   filter="agNumberColumnFilter", type=["numericColumn"])
+        gb.configure_column("Map Link",        cellRenderer="agHtmlCellRenderer",
+                            cellRendererParams={"html": "<a href='{value}' target='_blank'>📍 Map</a>"})
+        gb.configure_column("Website",         cellRenderer="agHtmlCellRenderer",
+                            cellRendererParams={"html": "<a href='{value}' target='_blank'>🔗 Site</a>"})
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)
+        gb.configure_side_bar(filters_panel=True, columns_panel=True)
+        gb.configure_selection(selection_mode="single", use_checkbox=False)
+        grid_opts = gb.build()
+
+        AgGrid(
+            display_df,
+            gridOptions=grid_opts,
+            update_mode=GridUpdateMode.NO_UPDATE,
+            columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+            theme="streamlit",
+            height=480,
+            allow_unsafe_jscode=True,
+            use_container_width=True,
         )
 
         map_df = filtered_df[["Restaurant Name", "Cuisine/Type", "Zone/Area",
