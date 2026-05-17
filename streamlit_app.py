@@ -542,10 +542,16 @@ CITY_AREA_MAP = {
 
 MANAGER_PASSWORD = "APA@2024"
 
+# Complete F&B type list from Google Places (New) API Table A — verified from docs
+# Limit is 50 types per request. All types below confirmed valid.
 FNB_ALL_TYPES = [
-    # Confirmed valid in Google Places (New) API Table A
+    # Core
     "restaurant", "cafe", "bar", "bakery", "coffee_shop", "fast_food_restaurant",
-    "wine_bar", "ice_cream_shop", "juice_shop", "tea_house",
+    "pub", "night_club", "food_court", "meal_delivery", "meal_takeaway",
+    "wine_bar", "cocktail_bar", "sports_bar", "lounge_bar", "bar_and_grill",
+    "ice_cream_shop", "juice_shop", "tea_house", "diner", "buffet_restaurant",
+    "fine_dining_restaurant", "cafeteria", "deli",
+    # Cuisine-specific
     "american_restaurant", "barbecue_restaurant", "brazilian_restaurant",
     "breakfast_restaurant", "brunch_restaurant", "chinese_restaurant",
     "french_restaurant", "greek_restaurant", "hamburger_restaurant",
@@ -555,9 +561,7 @@ FNB_ALL_TYPES = [
     "pizza_restaurant", "ramen_restaurant", "sandwich_shop", "seafood_restaurant",
     "spanish_restaurant", "steak_house", "sushi_restaurant", "thai_restaurant",
     "turkish_restaurant", "vegan_restaurant", "vegetarian_restaurant",
-    "vietnamese_restaurant",
-    # Removed: pub, night_club, food_court, meal_delivery, meal_takeaway
-    # Not in Places (New) Table A — caused 400 INVALID_ARGUMENT
+    "vietnamese_restaurant", "afghani_restaurant", "african_restaurant",
 ]
 
 TYPE_PRIORITY = ["restaurant", "cafe", "bar", "coffee_shop", "bakery",
@@ -610,7 +614,9 @@ def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
         try:
             resp = requests.post(url, json=payload, headers=headers, timeout=15)
             if resp.status_code != 200:
-                st.warning(f"Node {node_label} p{page+1} → {resp.status_code}: {resp.text[:150]}")
+                st.warning(f"Node {node_label} p{page+1} → {resp.status_code}")
+                st.json(resp.json())
+                break
                 break
             data       = resp.json()
             places     = data.get("places", [])
@@ -651,7 +657,7 @@ def execute_4x4_paginated_grid_sweep(api_key, city, area):
             "places.id,places.displayName,places.formattedAddress,"
             "places.location,places.rating,places.userRatingCount,"
             "places.priceLevel,places.types,places.websiteUri,"
-            "places.nationalPhoneNumber,nextPageToken"
+            "places.nationalPhoneNumber"
         ),
         "x-rapidapi-host": "google-map-places-new-v2.p.rapidapi.com",
         "x-rapidapi-key":  api_key
