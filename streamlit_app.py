@@ -25,7 +25,7 @@ ALL_COLUMNS = [
     "Lead Source", "Salesperson Name", "Lead Status", "Last Contacted", "Interaction Summary", "Next Follow-up"
 ]
 
-# 🗺️ FULL RESTORED COORDINATES INDEX WITH 15KM MASSIVE RADIUS
+# 🗺️ MAXIMUM COVERS GEOFENCES (Set to a massive 15,000m radius globally across all targets)
 NEIGHBORHOOD_CONFIG = {
     # --- HYDERABAD ---
     "Ameerpet": {"lat": 17.4375, "lng": 78.4482, "radius": 15000.0},
@@ -170,7 +170,6 @@ NEIGHBORHOOD_CONFIG = {
     "Kharghar": {"lat": 19.0252, "lng": 73.0672, "radius": 15000.0},
 }
 
-# 🌍 COMPLETE MASTER REGIONAL MAP INDEX
 CITY_AREA_MAP = {
     "Mumbai / Greater Mumbai": [
         "Colaba", "Nariman Point", "Fort", "Churchgate", "Marine Drive", "Malabar Hill", "Breach Candy", 
@@ -220,6 +219,7 @@ df = load_data()
 
 def get_places_new_v2_leads(api_key, city, area, limit):
     leads = []
+    # 🎯 FIX PATH ROUTING: Set URL path matching true Text Search endpoint
     url = "https://google-map-places-new-v2.p.rapidapi.com/v1/places:searchText"
     
     headers = {
@@ -229,12 +229,11 @@ def get_places_new_v2_leads(api_key, city, area, limit):
         "x-rapidapi-key": api_key
     }
     
-    # Fully generic contextual query string
     payload = {
-        "textQuery": f"places to eat and drink in {area}, {city.split(' / ')[0]}",
+        "textQuery": f"establishments to eat and drink in {area}, {city.split(' / ')[0]}",
         "languageCode": "en",
         "maxResultCount": int(limit),
-        # 🚀 COMPLETE UNRESTRICTED CATEGORY NET
+        # 🚀 COMPLETE UNRESTRICTED F&B TYPE MATRIX ARRAY
         "includedTypes": [
             "restaurant", "cafe", "bar", "coffee_shop", "bakery", 
             "fast_food_restaurant", "ice_cream_shop", "sandwich_shop", 
@@ -242,7 +241,6 @@ def get_places_new_v2_leads(api_key, city, area, limit):
         ]
     }
     
-    # Inject spatial geofence biasing coordinates dynamically if available
     if area in NEIGHBORHOOD_CONFIG:
         config = NEIGHBORHOOD_CONFIG[area]
         payload["locationBias"] = {
