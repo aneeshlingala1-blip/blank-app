@@ -542,16 +542,17 @@ CITY_AREA_MAP = {
 
 MANAGER_PASSWORD = "APA@2024"
 
-# Complete F&B type list from Google Places (New) API Table A — verified from docs
-# Limit is 50 types per request. All types below confirmed valid.
+# Google Places (New) API Table A — hard limit is 50 types per request
 FNB_ALL_TYPES = [
-    # Core
+    # Core (11)
     "restaurant", "cafe", "bar", "bakery", "coffee_shop", "fast_food_restaurant",
     "pub", "night_club", "food_court", "meal_delivery", "meal_takeaway",
-    "wine_bar", "cocktail_bar", "sports_bar", "lounge_bar", "bar_and_grill",
-    "ice_cream_shop", "juice_shop", "tea_house", "diner", "buffet_restaurant",
-    "fine_dining_restaurant", "cafeteria", "deli",
-    # Cuisine-specific
+    # Bar variants (4)
+    "wine_bar", "cocktail_bar", "sports_bar", "lounge_bar",
+    # Casual / other (6)
+    "ice_cream_shop", "juice_shop", "tea_house", "diner",
+    "fine_dining_restaurant", "buffet_restaurant",
+    # Cuisine-specific (29) — covers majority of Indian & global F&B venues
     "american_restaurant", "barbecue_restaurant", "brazilian_restaurant",
     "breakfast_restaurant", "brunch_restaurant", "chinese_restaurant",
     "french_restaurant", "greek_restaurant", "hamburger_restaurant",
@@ -561,8 +562,7 @@ FNB_ALL_TYPES = [
     "pizza_restaurant", "ramen_restaurant", "sandwich_shop", "seafood_restaurant",
     "spanish_restaurant", "steak_house", "sushi_restaurant", "thai_restaurant",
     "turkish_restaurant", "vegan_restaurant", "vegetarian_restaurant",
-    "vietnamese_restaurant", "afghani_restaurant", "african_restaurant",
-]
+]  # Total: 50 exactly
 
 TYPE_PRIORITY = ["restaurant", "cafe", "bar", "coffee_shop", "bakery",
                  "fast_food_restaurant", "pub", "night_club"]
