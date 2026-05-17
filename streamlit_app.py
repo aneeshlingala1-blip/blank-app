@@ -824,7 +824,7 @@ with tab1:
             }
             st.pydeck_chart(
                 pdk.Deck(layers=[layer], initial_view_state=view, tooltip=tooltip,
-                         map_style="mapbox://styles/mapbox/dark-v10"),
+                         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"),
                 use_container_width=True
             )
 
