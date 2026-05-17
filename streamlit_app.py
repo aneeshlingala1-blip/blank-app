@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import time
 import requests
+import pydeck as pdk
 from datetime import datetime
 
 # Automatically read the key from the native secrets framework securely
@@ -391,7 +392,7 @@ with tab1:
         st.dataframe(display_df, use_container_width=True)
 
         # FIX 5: Validate coordinates before rendering map
-        map_df = filtered_df[['Latitude', 'Longitude']].copy()
+        map_df = filtered_df[['Restaurant Name', 'Cuisine/Type', 'Zone/Area', 'Google Rating', 'Lead Status', 'Latitude', 'Longitude']].copy()
         map_df['latitude'] = pd.to_numeric(map_df['Latitude'], errors='coerce')
         map_df['longitude'] = pd.to_numeric(map_df['Longitude'], errors='coerce')
         map_df = map_df.dropna(subset=['latitude', 'longitude'])
@@ -401,7 +402,42 @@ with tab1:
             st.warning(f"⚠️ {invalid_count} record(s) have missing or invalid coordinates and won't appear on the map.")
 
         if not map_df.empty:
-            st.map(map_df[['latitude', 'longitude']], use_container_width=True)
+            view = pdk.ViewState(
+                latitude=map_df['latitude'].mean(),
+                longitude=map_df['longitude'].mean(),
+                zoom=11,
+                pitch=0,
+            )
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_df,
+                get_position='[longitude, latitude]',
+                get_color='[0, 140, 210, 200]',
+                get_radius=120,
+                pickable=True,
+            )
+            tooltip = {
+                "html": """
+                    <b>{Restaurant Name}</b><br/>
+                    🍽️ {Cuisine/Type}<br/>
+                    📍 {Zone/Area}<br/>
+                    ⭐ {Google Rating}<br/>
+                    🔖 {Lead Status}
+                """,
+                "style": {
+                    "backgroundColor": "#0f1117",
+                    "color": "white",
+                    "fontSize": "13px",
+                    "padding": "8px 12px",
+                    "borderRadius": "6px",
+                }
+            }
+            st.pydeck_chart(pdk.Deck(
+                layers=[layer],
+                initial_view_state=view,
+                tooltip=tooltip,
+                map_style="mapbox://styles/mapbox/dark-v10",
+            ), use_container_width=True)
 
 # -------------------- TAB 2 --------------------
 with tab2:
