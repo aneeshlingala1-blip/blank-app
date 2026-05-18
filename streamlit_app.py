@@ -1022,7 +1022,7 @@ with tab4:
 
     venue_focus = st.selectbox(
         "Venue Focus",
-        options=["All venues", "Mid to premium (₹₹+)", "Premium only (₹₹₹+)"],
+        options=["All venues (₹–₹₹₹₹)", "Mid to premium (₹₹+)", "Premium only (₹₹₹+)"],
         index=0,
         help="Controls price filter and ranking. Premium modes suppress roadside stalls and rank by popularity."
     )
