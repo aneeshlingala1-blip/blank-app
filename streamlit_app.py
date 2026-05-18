@@ -543,35 +543,40 @@ CITY_AREA_MAP = {
 
 MANAGER_PASSWORD = "APA@2024"
 
-# Google Places (New) API Table A — hard limit is 50 types per request
+# Google Places (New) API Table A — confirmed from official docs, limit 50 types
+# Verified February 2026 release — european_restaurant, halal_restaurant,
+# north_indian_restaurant, south_indian_restaurant etc. now confirmed valid.
 FNB_ALL_TYPES = [
     # Core (11)
     "restaurant", "cafe", "bar", "bakery", "coffee_shop", "fast_food_restaurant",
     "pub", "night_club", "food_court", "meal_delivery", "meal_takeaway",
-    # Bar variants (4)
-    "wine_bar", "cocktail_bar", "sports_bar", "lounge_bar",
+    # Bar & grill variants (5)
+    "wine_bar", "cocktail_bar", "sports_bar", "lounge_bar", "bar_and_grill",
     # Casual / other (6)
     "ice_cream_shop", "juice_shop", "tea_house", "diner",
     "fine_dining_restaurant", "buffet_restaurant",
-    # Cuisine-specific (29) — covers majority of Indian & global F&B venues
-    "american_restaurant", "barbecue_restaurant", "brazilian_restaurant",
-    "breakfast_restaurant", "brunch_restaurant", "chinese_restaurant",
-    "french_restaurant", "greek_restaurant", "hamburger_restaurant",
-    "indian_restaurant", "indonesian_restaurant", "italian_restaurant",
-    "japanese_restaurant", "korean_restaurant", "lebanese_restaurant",
-    "mediterranean_restaurant", "mexican_restaurant", "middle_eastern_restaurant",
-    "pizza_restaurant", "ramen_restaurant", "sandwich_shop", "seafood_restaurant",
-    "spanish_restaurant", "steak_house", "sushi_restaurant", "thai_restaurant",
-    "turkish_restaurant", "vegan_restaurant", "vegetarian_restaurant",
-]  # Total: 50 exactly
+    # India-specific & Middle Eastern (9)
+    "indian_restaurant", "north_indian_restaurant", "south_indian_restaurant",
+    "halal_restaurant", "kebab_shop", "shawarma_restaurant",
+    "middle_eastern_restaurant", "lebanese_restaurant", "turkish_restaurant",
+    # International cuisines popular in Indian metros (11)
+    "european_restaurant", "mediterranean_restaurant", "italian_restaurant",
+    "french_restaurant", "japanese_restaurant", "sushi_restaurant",
+    "chinese_restaurant", "asian_restaurant", "thai_restaurant",
+    "seafood_restaurant", "steak_house",
+    # Contemporary / premium (8)
+    "fusion_restaurant", "pizza_restaurant", "vietnamese_restaurant",
+    "breakfast_restaurant", "brunch_restaurant", "sandwich_shop",
+    "vegan_restaurant", "vegetarian_restaurant",
+]  # Total: 50 exactly — confirmed valid, India-optimised
 
 TYPE_PRIORITY = ["restaurant", "cafe", "bar", "coffee_shop", "bakery",
                  "fast_food_restaurant", "pub", "night_club"]
 
 # 4x4 grid: ~2.5km steps → ~10km total span across the area
 # 1500m cell radius → adjacent cells overlap ~560m, no gaps
-GRID_OFFSETS = [-0.033, -0.011, 0.011, 0.033]
-CELL_RADIUS  = 1500.0
+GRID_OFFSETS = [-0.012, -0.004, 0.004, 0.012]
+CELL_RADIUS  = 800.0
 MAX_PAGES    = 3
 
 
@@ -1049,10 +1054,21 @@ with tab4:
         else:
             scraped_results = execute_4x4_paginated_grid_sweep(active_key, city_selected, area_selected)
             if scraped_results:
-                existing_names = df["Restaurant Name"].dropna().values
+                # Dedup by placeId (embedded in Map Link) — name-only dedup
+                # caused real venues to be silently skipped when outer grid nodes
+                # had already filled the name index with wrong-area venues.
+                existing_map_links = set(df["Map Link"].dropna().values)
+                existing_names     = set(df["Restaurant Name"].dropna().values)
                 new_rows = []
                 for item in scraped_results:
-                    if item["Restaurant Name"].strip() not in existing_names:
+                    map_link = item.get("Map Link", "")
+                    name     = item.get("Restaurant Name", "").strip()
+                    # If we have a placeId link, use that; fall back to name only if no link
+                    already_exists = (
+                        (map_link and map_link in existing_map_links) or
+                        (not map_link and name in existing_names)
+                    )
+                    if not already_exists:
                         entry = {col: "" for col in ALL_COLUMNS}
                         entry.update(item)
                         new_rows.append(entry)
