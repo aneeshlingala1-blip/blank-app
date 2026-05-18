@@ -1020,30 +1020,23 @@ with tab4:
     city_selected = st.selectbox("Target City", list(CITY_AREA_MAP.keys()))
     area_selected = st.selectbox("Neighbourhood", CITY_AREA_MAP[city_selected])
 
-    venue_focus = st.selectbox(
+    venue_focus = st.radio(
         "Venue Focus",
-        options=["All venues (₹–₹₹₹₹)", "Mid to premium (₹₹+)", "Premium only (₹₹₹+)"],
+        options=["Everything", "Mid & above (₹₹+)"],
         index=0,
-        help="Controls price filter and ranking. Premium modes suppress roadside stalls and rank by popularity."
+        horizontal=True,
+        help="'Everything' pulls all rated venues. 'Mid & above' filters to ₹₹–₹₹₹₹ only."
     )
 
-    # priceLevels not used — avoids excluding new venues with no price tag yet.
-    # minRating filters by star VALUE not review count, so new places still appear.
-    # Price tier ordering is applied post-fetch via sort, not as an API filter.
     SWEEP_CONFIGS = {
-        "All venues (₹–₹₹₹₹)": {
+        "Everything": {
             "rankPreference": "POPULARITY",
             "priceLevels":    None,
             "minRating":      3.5,
         },
-        "Mid to premium (₹₹+)": {
+        "Mid & above (₹₹+)": {
             "rankPreference": "POPULARITY",
             "priceLevels":    ["PRICE_LEVEL_MODERATE", "PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE"],
-            "minRating":      3.5,
-        },
-        "Premium only (₹₹₹+)": {
-            "rankPreference": "POPULARITY",
-            "priceLevels":    ["PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE"],
             "minRating":      3.5,
         },
     }
