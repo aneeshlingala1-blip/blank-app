@@ -601,13 +601,14 @@ def parse_coordinate(value, field_name):
     except (ValueError, TypeError):
         return None, f"⚠️ Invalid {field_name}: '{value}' is not a number. Pin skipped."
 
-def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
+def _paginate_cell(api_key, headers, node_lat, node_lng, node_label, sweep_config=None):
     """Fetch up to MAX_PAGES pages from one grid cell via searchNearby."""
+    cfg = sweep_config or {}
     url = "https://google-map-places-new-v2.p.rapidapi.com/v1/places:searchNearby"
     payload = {
         "includedTypes": FNB_ALL_TYPES,
         "maxResultCount": 20,
-        "rankPreference": "DISTANCE",
+        "rankPreference": cfg.get("rankPreference", "POPULARITY"),
         "locationRestriction": {
             "circle": {
                 "center": {"latitude": node_lat, "longitude": node_lng},
@@ -616,6 +617,10 @@ def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
         },
         "languageCode": "en"
     }
+    if cfg.get("priceLevels"):
+        payload["priceLevels"] = cfg["priceLevels"]
+    if cfg.get("minRating"):
+        payload["minRating"] = cfg["minRating"]
     cell_places = []
     page = 0
     while page < MAX_PAGES:
@@ -624,7 +629,6 @@ def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
             if resp.status_code != 200:
                 st.warning(f"Node {node_label} p{page+1} → {resp.status_code}")
                 st.json(resp.json())
-                break
                 break
             data       = resp.json()
             places     = data.get("places", [])
@@ -640,7 +644,7 @@ def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
             break
     return cell_places
 
-def execute_4x4_paginated_grid_sweep(api_key, city, area):
+def execute_4x4_paginated_grid_sweep(api_key, city, area, sweep_config=None):
     """
     16-node 4x4 grid centred on the neighbourhood.
     Each node: up to 3 pages x 20 results = 60 venues.
@@ -665,7 +669,7 @@ def execute_4x4_paginated_grid_sweep(api_key, city, area):
             "places.id,places.displayName,places.formattedAddress,"
             "places.location,places.rating,places.userRatingCount,"
             "places.priceLevel,places.types,places.websiteUri,"
-            "places.nationalPhoneNumber"
+            "places.nationalPhoneNumber,places.businessStatus"
         ),
         "x-rapidapi-host": "google-map-places-new-v2.p.rapidapi.com",
         "x-rapidapi-key":  api_key
@@ -685,15 +689,32 @@ def execute_4x4_paginated_grid_sweep(api_key, city, area):
         )
         progress.progress(int((i / total) * 90), text=f"Node {i+1}/{total}…")
 
-        for place in _paginate_cell(api_key, headers, node["lat"], node["lng"], node["label"]):
-            pid = place.get("id", "")
-            if pid and pid not in seen_ids:
+        for place in _paginate_cell(api_key, headers, node["lat"], node["lng"], node["label"], sweep_config):
+            pid    = place.get("id", "")
+            status = place.get("businessStatus", "")
+            if pid and pid not in seen_ids and status != "PERMANENTLY_CLOSED":
                 seen_ids.add(pid)
                 all_places.append(place)
         time.sleep(0.3)
 
     status_box.empty()
-    progress.progress(95, text="Processing results…")
+    progress.progress(95, text="Sorting by price tier then rating…")
+
+    # Sort: price tier descending → rating descending → review count descending
+    # This puts ₹₹₹₹ venues at top, roadside stalls at bottom — no venues excluded.
+    PRICE_RANK = {
+        "PRICE_LEVEL_VERY_EXPENSIVE": 4,
+        "PRICE_LEVEL_EXPENSIVE":      3,
+        "PRICE_LEVEL_MODERATE":       2,
+        "PRICE_LEVEL_INEXPENSIVE":    1,
+        "PRICE_LEVEL_FREE":           0,
+        "":                          -1,   # untagged — sorted last
+    }
+    all_places.sort(key=lambda p: (
+        p.get("userRatingCount", 0) or 0,               # popularity (review count) desc
+        PRICE_RANK.get(p.get("priceLevel", ""), -1),   # price tier desc
+        p.get("rating", 0) or 0,                        # rating value desc
+    ), reverse=True)
 
     leads = []
     for place in all_places:
@@ -998,6 +1019,36 @@ with tab4:
 
     city_selected = st.selectbox("Target City", list(CITY_AREA_MAP.keys()))
     area_selected = st.selectbox("Neighbourhood", CITY_AREA_MAP[city_selected])
+
+    venue_focus = st.selectbox(
+        "Venue Focus",
+        options=["All venues", "Mid to premium (₹₹+)", "Premium only (₹₹₹+)"],
+        index=0,
+        help="Controls price filter and ranking. Premium modes suppress roadside stalls and rank by popularity."
+    )
+
+    # priceLevels not used — avoids excluding new venues with no price tag yet.
+    # minRating filters by star VALUE not review count, so new places still appear.
+    # Price tier ordering is applied post-fetch via sort, not as an API filter.
+    SWEEP_CONFIGS = {
+        "All venues (₹–₹₹₹₹)": {
+            "rankPreference": "POPULARITY",
+            "priceLevels":    None,
+            "minRating":      3.5,
+        },
+        "Mid to premium (₹₹+)": {
+            "rankPreference": "POPULARITY",
+            "priceLevels":    ["PRICE_LEVEL_MODERATE", "PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE"],
+            "minRating":      3.5,
+        },
+        "Premium only (₹₹₹+)": {
+            "rankPreference": "POPULARITY",
+            "priceLevels":    ["PRICE_LEVEL_EXPENSIVE", "PRICE_LEVEL_VERY_EXPENSIVE"],
+            "minRating":      3.5,
+        },
+    }
+    sweep_config = SWEEP_CONFIGS[venue_focus]
+
     st.caption("ℹ️ 16 nodes × 3 pages × 20 results = up to **960 unique venues** | up to **48 API calls** per harvest")
 
     # ── API Connection Tester ──────────────────────────────────────────────────
@@ -1052,7 +1103,7 @@ with tab4:
         if not active_key:
             st.error("Missing RAPIDAPI_KEY in secrets.")
         else:
-            scraped_results = execute_4x4_paginated_grid_sweep(active_key, city_selected, area_selected)
+            scraped_results = execute_4x4_paginated_grid_sweep(active_key, city_selected, area_selected, sweep_config)
             if scraped_results:
                 # Dedup by placeId (embedded in Map Link) — name-only dedup
                 # caused real venues to be silently skipped when outer grid nodes
