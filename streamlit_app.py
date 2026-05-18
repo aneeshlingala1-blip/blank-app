@@ -13,7 +13,6 @@ if "RAPIDAPI_KEY" in st.secrets:
 
 st.set_page_config(page_title="APA CRM - Sales Portal", layout="wide", page_icon="💧")
 
-# Establish live connection to Google Sheets database
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 ALL_COLUMNS = [
@@ -35,7 +34,7 @@ PRICE_LEVEL_MAP = {
     "PRICE_LEVEL_VERY_EXPENSIVE": "₹₹₹₹",
 }
 
-# --- EXTENSIVE NEIGHBORHOOD COORDINATE CONFIGURATIONS ---
+# Centre coordinates only. Grid cells are computed dynamically.
 NEIGHBORHOOD_CONFIG = {
     # --- HYDERABAD ---
     "Ameerpet":                    {"lat": 17.4375, "lng": 78.4482},
@@ -542,21 +541,19 @@ CITY_AREA_MAP = {
     "Chandigarh / Tricity": ["Sector 26", "Sector 35", "Elante Mall Area"],
 }
 
-# Fix dynamic resolution loop to map unlisted zones safely without masking Jubilee Hills
-for city, areas in CITY_AREA_MAP.items():
-    for area in areas:
-        if area not in NEIGHBORHOOD_CONFIG:
-            NEIGHBORHOOD_CONFIG[area] = {"lat": 17.4200, "lng": 78.4600}
-
 MANAGER_PASSWORD = "APA@2024"
 
 # Google Places (New) API Table A — hard limit is 50 types per request
 FNB_ALL_TYPES = [
+    # Core (11)
     "restaurant", "cafe", "bar", "bakery", "coffee_shop", "fast_food_restaurant",
     "pub", "night_club", "food_court", "meal_delivery", "meal_takeaway",
+    # Bar variants (4)
     "wine_bar", "cocktail_bar", "sports_bar", "lounge_bar",
+    # Casual / other (6)
     "ice_cream_shop", "juice_shop", "tea_house", "diner",
     "fine_dining_restaurant", "buffet_restaurant",
+    # Cuisine-specific (29) — covers majority of Indian & global F&B venues
     "american_restaurant", "barbecue_restaurant", "brazilian_restaurant",
     "breakfast_restaurant", "brunch_restaurant", "chinese_restaurant",
     "french_restaurant", "greek_restaurant", "hamburger_restaurant",
@@ -566,20 +563,21 @@ FNB_ALL_TYPES = [
     "pizza_restaurant", "ramen_restaurant", "sandwich_shop", "seafood_restaurant",
     "spanish_restaurant", "steak_house", "sushi_restaurant", "thai_restaurant",
     "turkish_restaurant", "vegan_restaurant", "vegetarian_restaurant",
-]
+]  # Total: 50 exactly
 
 TYPE_PRIORITY = ["restaurant", "cafe", "bar", "coffee_shop", "bakery",
                  "fast_food_restaurant", "pub", "night_club"]
 
-# Advanced 4x4 Deep Grid Harvester Config Parameters
+# 4x4 grid: ~2.5km steps → ~10km total span across the area
+# 1500m cell radius → adjacent cells overlap ~560m, no gaps
 GRID_OFFSETS = [-0.033, -0.011, 0.011, 0.033]
 CELL_RADIUS  = 1500.0
 MAX_PAGES    = 3
 
-# ── Data Core Engine ──────────────────────────────────────────────────────────
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def load_data():
-    """Pulls fresh master pipeline records from the live Google Sheet."""
     try:
         df_sheet = conn.read(worksheet="Leads", ttl=0)
         for col in ALL_COLUMNS:
@@ -587,7 +585,7 @@ def load_data():
                 df_sheet[col] = ""
         return df_sheet
     except Exception as e:
-        st.error(f"⚠️ Google Sheets Connection Failure: {e}")
+        st.error(f"⚠️ Google Sheets connection failure: {e}")
         return pd.DataFrame(columns=ALL_COLUMNS)
 
 def parse_coordinate(value, field_name):
@@ -596,15 +594,21 @@ def parse_coordinate(value, field_name):
     try:
         return float(value), None
     except (ValueError, TypeError):
-        return None, f"⚠️ Invalid {field_name} format."
+        return None, f"⚠️ Invalid {field_name}: '{value}' is not a number. Pin skipped."
 
 def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
+    """Fetch up to MAX_PAGES pages from one grid cell via searchNearby."""
     url = "https://google-map-places-new-v2.p.rapidapi.com/v1/places:searchNearby"
     payload = {
         "includedTypes": FNB_ALL_TYPES,
         "maxResultCount": 20,
         "rankPreference": "DISTANCE",
-        "locationRestriction": {"circle": {"center": {"latitude": node_lat, "longitude": node_lng}, "radius": CELL_RADIUS}},
+        "locationRestriction": {
+            "circle": {
+                "center": {"latitude": node_lat, "longitude": node_lng},
+                "radius": CELL_RADIUS
+            }
+        },
         "languageCode": "en"
     }
     cell_places = []
@@ -613,9 +617,12 @@ def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
         try:
             resp = requests.post(url, json=payload, headers=headers, timeout=15)
             if resp.status_code != 200:
+                st.warning(f"Node {node_label} p{page+1} → {resp.status_code}")
+                st.json(resp.json())
                 break
-            data = resp.json()
-            places = data.get("places", [])
+                break
+            data       = resp.json()
+            places     = data.get("places", [])
             next_token = data.get("nextPageToken")
             cell_places.extend(places)
             page += 1
@@ -623,34 +630,56 @@ def _paginate_cell(api_key, headers, node_lat, node_lng, node_label):
                 break
             payload = {"pageToken": next_token}
             time.sleep(0.5)
-        except Exception:
+        except Exception as e:
+            st.warning(f"Node {node_label} p{page+1} failed: {str(e)}")
             break
     return cell_places
 
 def execute_4x4_paginated_grid_sweep(api_key, city, area):
+    """
+    16-node 4x4 grid centred on the neighbourhood.
+    Each node: up to 3 pages x 20 results = 60 venues.
+    Total max: 16 x 60 = 960 unique venues per sweep.
+    Deduplication by placeId across all nodes.
+    """
     if area not in NEIGHBORHOOD_CONFIG:
         st.error(f"No config found for '{area}'.")
         return []
 
     cfg = NEIGHBORHOOD_CONFIG[area]
-    nodes = [{"lat": cfg["lat"] + lat_off, "lng": cfg["lng"] + lng_off, "label": f"({lat_off:.3f},{lng_off:.3f})"} 
-             for lat_off in GRID_OFFSETS for lng_off in GRID_OFFSETS]
+    nodes = [
+        {"lat": cfg["lat"] + lat_off, "lng": cfg["lng"] + lng_off,
+         "label": f"({lat_off:+.3f},{lng_off:+.3f})"}
+        for lat_off in GRID_OFFSETS
+        for lng_off in GRID_OFFSETS
+    ]
 
     headers = {
         "content-type": "application/json",
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.priceLevel,places.types,places.websiteUri,places.nationalPhoneNumber",
+        "X-Goog-FieldMask": (
+            "places.id,places.displayName,places.formattedAddress,"
+            "places.location,places.rating,places.userRatingCount,"
+            "places.priceLevel,places.types,places.websiteUri,"
+            "places.nationalPhoneNumber"
+        ),
         "x-rapidapi-host": "google-map-places-new-v2.p.rapidapi.com",
         "x-rapidapi-key":  api_key
     }
 
-    seen_ids = set()
+    seen_ids   = set()
     all_places = []
+    total      = len(nodes)
     status_box = st.empty()
-    progress = st.progress(0, text="Initialising 16-node grid…")
-    
+    progress   = st.progress(0, text="Initialising 16-node grid…")
+
     for i, node in enumerate(nodes):
-        status_box.markdown(f"🛰️ **Grid Crawler:** Active on node `{i+1}/{len(nodes)}`...")
-        progress.progress(int((i / len(nodes)) * 90), text=f"Node {i+1}/{len(nodes)}…")
+        status_box.markdown(
+            f"🛰️ **Grid Crawler:** Node `{i+1}/{total}` "
+            f"at `{node['lat']:.4f}, {node['lng']:.4f}` — "
+            f"**{len(all_places)}** unique venues so far"
+        )
+        progress.progress(int((i / total) * 90), text=f"Node {i+1}/{total}…")
+
         for place in _paginate_cell(api_key, headers, node["lat"], node["lng"], node["label"]):
             pid = place.get("id", "")
             if pid and pid not in seen_ids:
@@ -663,19 +692,21 @@ def execute_4x4_paginated_grid_sweep(api_key, city, area):
 
     leads = []
     for place in all_places:
-        name = place.get("displayName", {}).get("text", "F&B Venue")
+        name    = place.get("displayName", {}).get("text", "F&B Venue")
         address = place.get("formattedAddress", f"{area}, {city}")
-        loc = place.get("location", {})
-        pid = place.get("id", "")
+        loc     = place.get("location", {})
+        lat     = loc.get("latitude", "")
+        lon     = loc.get("longitude", "")
+        pid     = place.get("id", "")
 
         leads.append({
             "Restaurant Name":  name,
-            "Cuisine/Type":     next((t.replace("_", " ").title() for t in TYPE_PRIORITY if t in place.get("types", [])), "Food Space"),
+            "Cuisine/Type":     next((t.replace("_", " ").title() for t in TYPE_PRIORITY
+                                     if t in place.get("types", [])), "Food Space"),
             "Zone/Area":        area,
             "Address":          address,
-            "Latitude":         float(loc.get("latitude", "")) if loc.get("latitude") else "",
-            "Longitude":        float(loc.get("longitude", "")) if loc.get("longitude") else "",
-            # Using standard functional Google Map queries to prevent broken link structures
+            "Latitude":         float(lat) if lat != "" else "",
+            "Longitude":        float(lon) if lon != "" else "",
             "Map Link":         f"https://www.google.com/maps/place/?q=place_id:{pid}" if pid else "",
             "Website":          place.get("websiteUri", ""),
             "Restaurant Phone": place.get("nationalPhoneNumber", ""),
@@ -686,10 +717,12 @@ def execute_4x4_paginated_grid_sweep(api_key, city, area):
             "Lead Status":      "Cold Lead",
             "Last Contacted":   datetime.now().strftime("%Y-%m-%d %H:%M")
         })
+
     progress.progress(100, text=f"Done — {len(leads)} unique venues from 16 nodes.")
     return leads
 
-# ── Main Application Render ──────────────────────────────────────────────────
+
+# ── App ───────────────────────────────────────────────────────────────────────
 
 df = load_data()
 
@@ -702,28 +735,36 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "📥 Bulk Import CSV",    "🔍 Real-Time Lead Generator"
 ])
 
-# ── Tab 1: Dashboard View ─────────────────────────────────────────────────────
+# ── Tab 1 ─────────────────────────────────────────────────────────────────────
+
 with tab1:
     st.subheader("Current Pipeline")
     if df.empty:
-        st.info("No active records found in the spreadsheet. Run the generator on Tab 4.")
+        st.info("No data yet. Run the harvester on Tab 4.")
     else:
         if is_manager:
             st.download_button(
                 "📥 Export Full CRM Database to CSV",
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name=f"apa_pipeline_export_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="secure_mgr_export_btn"
             )
+        else:
+            st.warning("🔒 Export restricted. Enter Admin Password to unlock.")
+
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             search_query = st.text_input("🔍 Search by Establishment Name")
         with col_f2:
-            zone_filter = st.multiselect("Filter by Zone/Area", options=list(df["Zone/Area"].dropna().unique()))
+            zone_filter = st.multiselect("Filter by Zone/Area",
+                                         options=list(df["Zone/Area"].dropna().unique()))
 
         filtered_df = df.copy()
         if search_query:
-            filtered_df = filtered_df[filtered_df["Restaurant Name"].str.contains(search_query, case=False, na=False)]
+            filtered_df = filtered_df[
+                filtered_df["Restaurant Name"].str.contains(search_query, case=False, na=False)
+            ]
         if zone_filter:
             filtered_df = filtered_df[filtered_df["Zone/Area"].isin(zone_filter)]
 
@@ -734,40 +775,72 @@ with tab1:
                     display_df[col] = "🔒 Restricted"
 
         gb = GridOptionsBuilder.from_dataframe(display_df)
-        gb.configure_default_column(filter=True, sortable=True, resizable=True, floatingFilter=True, minWidth=100)
-        gb.configure_column("Restaurant Name", pinned="left", minWidth=200, filter="agTextColumnFilter")
+        gb.configure_default_column(
+            filter=True,
+            sortable=True,
+            resizable=True,
+            floatingFilter=True,   # filter row directly under headers, like Excel
+            minWidth=100,
+        )
+        # Column-specific filter types
+        gb.configure_column("Restaurant Name", pinned="left", minWidth=200,
+                            filter="agTextColumnFilter")
         gb.configure_column("Cuisine/Type",    filter="agTextColumnFilter")
         gb.configure_column("Zone/Area",       filter="agSetColumnFilter")
         gb.configure_column("Lead Status",     filter="agSetColumnFilter")
         gb.configure_column("Price Segment",   filter="agSetColumnFilter")
         gb.configure_column("Google Rating",   filter="agNumberColumnFilter", type=["numericColumn"])
         gb.configure_column("Total Reviews",   filter="agNumberColumnFilter", type=["numericColumn"])
-        gb.configure_column("Map Link",        cellRenderer="agHtmlCellRenderer", cellRendererParams={"html": "<a href='{value}' target='_blank'>📍 Map</a>"})
-        gb.configure_column("Website",         cellRenderer="agHtmlCellRenderer", cellRendererParams={"html": "<a href='{value}' target='_blank'>🔗 Site</a>"})
+        gb.configure_column("Map Link",        cellRenderer="agHtmlCellRenderer",
+                            cellRendererParams={"html": "<a href='{value}' target='_blank'>📍 Map</a>"})
+        gb.configure_column("Website",         cellRenderer="agHtmlCellRenderer",
+                            cellRendererParams={"html": "<a href='{value}' target='_blank'>🔗 Site</a>"})
         gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)
         gb.configure_side_bar(filters_panel=True, columns_panel=True)
         gb.configure_selection(selection_mode="single", use_checkbox=False)
         grid_opts = gb.build()
 
-        AgGrid(display_df, gridOptions=grid_opts, update_mode=GridUpdateMode.NO_UPDATE, 
-               columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS, theme="streamlit", height=480, allow_unsafe_jscode=True, use_container_width=True)
+        AgGrid(
+            display_df,
+            gridOptions=grid_opts,
+            update_mode=GridUpdateMode.NO_UPDATE,
+            columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+            theme="streamlit",
+            height=480,
+            allow_unsafe_jscode=True,
+            use_container_width=True,
+        )
 
-        # PyDeck Geopoint Visualization Map
-        map_df = filtered_df[["Restaurant Name", "Cuisine/Type", "Zone/Area", "Google Rating", "Lead Status", "Latitude", "Longitude"]].copy()
+        map_df = filtered_df[["Restaurant Name", "Cuisine/Type", "Zone/Area",
+                               "Google Rating", "Lead Status", "Latitude", "Longitude"]].copy()
         map_df["latitude"]  = pd.to_numeric(map_df["Latitude"],  errors="coerce")
         map_df["longitude"] = pd.to_numeric(map_df["Longitude"], errors="coerce")
         map_df = map_df.dropna(subset=["latitude", "longitude"])
 
-        if not map_df.empty:
-            view = pdk.ViewState(latitude=map_df["latitude"].median(), longitude=map_df["longitude"].median(), zoom=12, pitch=0)
-            layer = pdk.Layer("ScatterplotLayer", data=map_df, get_position="[longitude, latitude]", get_color="[220, 50, 50, 180]", get_radius=100, pickable=True)
-            tooltip = {
-                "html": "<b>{Restaurant Name}</b><br/>🍽️ {Cuisine/Type}<br/>📍 {Zone/Area}<br/>⭐ {Google Rating}<br/>🔖 {Lead Status}",
-                "style": {"backgroundColor": "#0f1117", "color": "white", "fontSize": "13px", "padding": "8px 12px", "borderRadius": "6px"}
-            }
-            st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view, tooltip=tooltip, map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"), use_container_width=True)
+        invalid_count = len(filtered_df) - len(map_df)
+        if invalid_count > 0:
+            st.warning(f"⚠️ {invalid_count} record(s) have missing/invalid coordinates and won't appear on map.")
 
-# ── Tab 2: Manual Update Entry ────────────────────────────────────────────────
+        if not map_df.empty:
+            view = pdk.ViewState(latitude=map_df["latitude"].median(),
+                                 longitude=map_df["longitude"].median(), zoom=12, pitch=0)
+            layer = pdk.Layer("ScatterplotLayer", data=map_df,
+                              get_position="[longitude, latitude]",
+                              get_color="[220, 50, 50, 180]", get_radius=100, pickable=True)
+            tooltip = {
+                "html": ("<b>{Restaurant Name}</b><br/>🍽️ {Cuisine/Type}<br/>"
+                         "📍 {Zone/Area}<br/>⭐ {Google Rating}<br/>🔖 {Lead Status}"),
+                "style": {"backgroundColor": "#0f1117", "color": "white",
+                          "fontSize": "13px", "padding": "8px 12px", "borderRadius": "6px"}
+            }
+            st.pydeck_chart(
+                pdk.Deck(layers=[layer], initial_view_state=view, tooltip=tooltip,
+                         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"),
+                use_container_width=True
+            )
+
+# ── Tab 2 ─────────────────────────────────────────────────────────────────────
+
 with tab2:
     st.subheader("Sales Rep Log Entry & Deletion Portal")
     existing = ["-- Create New Blank Lead --"] + list(df["Restaurant Name"].dropna().unique())
@@ -783,7 +856,7 @@ with tab2:
         if st.button("❌ Delete This Entry From CRM"):
             df = df[df["Restaurant Name"] != selected_rest]
             conn.update(worksheet="Leads", data=df)
-            st.warning(f"Deleted '{selected_rest}' from Google Sheets.")
+            st.warning(f"Deleted '{selected_rest}'.")
             time.sleep(1)
             st.rerun()
 
@@ -791,19 +864,19 @@ with tab2:
         st.markdown("### 🏛️ 1. Profile Data")
         col1, col2 = st.columns(2)
         with col1:
-            r_name  = st.text_input("Restaurant Name *", value=defaults["Restaurant Name"])
-            c_name  = st.text_input("Company / Parent Group", value=defaults["Company Name"])
-            cuisine = st.text_input("Cuisine / Type", value=defaults["Cuisine/Type"])
-            zone    = st.text_input("Zone / Area", value=defaults["Zone/Area"])
-            address = st.text_area("Address", value=defaults["Address"])
+            r_name  = st.text_input("Restaurant Name *",         value=defaults["Restaurant Name"])
+            c_name  = st.text_input("Company / Parent Group",    value=defaults["Company Name"])
+            cuisine = st.text_input("Cuisine / Type",            value=defaults["Cuisine/Type"])
+            zone    = st.text_input("Zone / Area",               value=defaults["Zone/Area"])
+            address = st.text_area("Address",                    value=defaults["Address"])
         with col2:
-            web     = st.text_input("Website", value=defaults["Website"])
-            r_phone = st.text_input("Restaurant Phone", value=defaults["Restaurant Phone"])
-            rating  = st.text_input("Google Rating", value=str(defaults["Google Rating"]))
-            map_l   = st.text_input("Google Maps Link", value=defaults["Map Link"])
-            lat_in  = st.text_input("Latitude", value=str(defaults["Latitude"]))
-            lon_in  = st.text_input("Longitude", value=str(defaults["Longitude"]))
-        
+            web     = st.text_input("Website",                   value=defaults["Website"])
+            r_phone = st.text_input("Restaurant Phone",          value=defaults["Restaurant Phone"])
+            rating  = st.text_input("Google Rating",             value=str(defaults["Google Rating"]))
+            map_l   = st.text_input("Google Maps Link",          value=defaults["Map Link"])
+            lat_in  = st.text_input("Latitude (e.g. 17.4251)",  value=str(defaults["Latitude"]))
+            lon_in  = st.text_input("Longitude (e.g. 78.4595)", value=str(defaults["Longitude"]))
+
         st.markdown("### 👥 2. Contact Directory")
         col3, col4 = st.columns(2)
         with col3:
@@ -820,61 +893,73 @@ with tab2:
         st.markdown("### 📊 3. Pipeline & Terms")
         col5, col6 = st.columns(2)
         with col5:
-            curr_b   = st.text_input("Current Water Brand", value=defaults["Current Brand"])
-            b_type   = st.text_input("Bottle Type", value=defaults["Bottle Type"])
-            acq_c    = st.text_input("Acquisition Cost", value=str(defaults["Acquisition Cost (Excl GST)"]))
-            m_vol    = st.text_input("Monthly Volume", value=str(defaults["Monthly Volume (Bottles)"]))
-            expiry   = st.text_input("Competitor Contract Expiry", value=defaults["Competitor Contract Expiry"])
+            curr_b      = st.text_input("Current Water Brand",          value=defaults["Current Brand"])
+            b_type      = st.text_input("Bottle Type",                  value=defaults["Bottle Type"])
+            acq_c       = st.text_input("Acquisition Cost (Excl. GST)", value=str(defaults["Acquisition Cost (Excl GST)"]))
+            m_vol       = st.text_input("Monthly Volume (Bottles)",     value=str(defaults["Monthly Volume (Bottles)"]))
+            expiry      = st.text_input("Competitor Contract Expiry",   value=defaults["Competitor Contract Expiry"])
         with col6:
-            prop_sku = st.text_input("Proposed APA SKU", value=defaults["Proposed APA SKU"])
-            sample_date = st.text_input("Sample Delivery Date", value=defaults["Sample Delivery Date"])
-            margin   = st.text_input("Agreed Margin %", value=str(defaults["Agreed Margin %"]))
-            credit   = st.text_input("Credit Terms", value=defaults["Credit Terms"])
-            lead_src = st.text_input("Lead Source", value=defaults["Lead Source"] or "Manual Entry")
+            prop_sku    = st.text_input("Proposed APA SKU",             value=defaults["Proposed APA SKU"])
+            sample_date = st.text_input("Sample Delivery Date",         value=defaults["Sample Delivery Date"])
+            margin      = st.text_input("Agreed Margin %",              value=str(defaults["Agreed Margin %"]))
+            credit      = st.text_input("Credit Terms",                 value=defaults["Credit Terms"])
+            lead_src    = st.text_input("Lead Source",                  value=defaults["Lead Source"] or "Manual Entry")
 
         st.markdown("### ⚡ 4. Activity Logs")
         col7, col8 = st.columns(2)
         with col7:
-            salesperson = st.text_input("Salesperson Name", value=defaults["Salesperson Name"])
-            status_options = ["Cold Lead", "Warm Lead", "Sample Dropped", "Tasting Scheduled", "Negotiation", "Active Client", "Lost Account"]
-            status   = st.selectbox("Lead Status", status_options, index=status_options.index(defaults["Lead Status"]) if defaults["Lead Status"] in status_options else 0)
+            salesperson    = st.text_input("Salesperson Name", value=defaults["Salesperson Name"])
+            status_options = ["Cold Lead", "Warm Lead", "Sample Dropped",
+                              "Tasting Scheduled", "Negotiation", "Active Client", "Lost Account"]
+            status = st.selectbox("Lead Status", status_options,
+                                  index=status_options.index(defaults["Lead Status"])
+                                  if defaults["Lead Status"] in status_options else 0)
         with col8:
-            notes    = st.text_area("Interaction Notes", value=defaults["Interaction Summary"])
-            next_f   = st.text_input("Next Follow-up Date", value=defaults["Next Follow-up"])
+            notes  = st.text_area("Interaction Notes",    value=defaults["Interaction Summary"])
+            next_f = st.text_input("Next Follow-up Date", value=defaults["Next Follow-up"])
 
         if st.form_submit_button("💾 Save & Update Lead") and r_name:
-            lat_val, _ = parse_coordinate(lat_in.strip(), "Latitude")
-            lon_val, _ = parse_coordinate(lon_in.strip(), "Longitude")
+            lat_val, lat_err = parse_coordinate(lat_in.strip(), "Latitude")
+            lon_val, lon_err = parse_coordinate(lon_in.strip(), "Longitude")
+            for err in [lat_err, lon_err]:
+                if err: st.warning(err)
 
             form_entry = {
-                "Restaurant Name": r_name, "Company Name": c_name, "Cuisine/Type": cuisine, "Zone/Area": zone, "Address": address,
-                "Website": web, "Restaurant Phone": r_phone, "Google Rating": rating, "Map Link": map_l,
-                "Latitude": lat_val if lat_val else "", "Longitude": lon_val if lon_val else "",
-                "Primary Contact Name": p_name, "Primary Contact Role": p_role, "Primary Contact Phone": p_phone, "Primary Contact Email": p_email,
-                "Decision Maker Name": dm_name, "Decision Maker Details": dm_details, "Other Contact Name": o_name, "Other Contact Details": o_details,
-                "Current Brand": curr_b, "Bottle Type": b_type, "Acquisition Cost (Excl GST)": acq_c, "Monthly Volume (Bottles)": m_vol,
-                "Competitor Contract Expiry": expiry, "Proposed APA SKU": prop_sku, "Sample Delivery Date": sample_date, 
-                "Agreed Margin %": margin, "Credit Terms": credit, "Lead Source": lead_src, "Salesperson Name": salesperson, 
-                "Lead Status": status, "Last Contacted": datetime.now().strftime("%Y-%m-%d %H:%M"), "Interaction Summary": notes, "Next Follow-up": next_f
+                "Restaurant Name": r_name, "Company Name": c_name, "Cuisine/Type": cuisine,
+                "Zone/Area": zone, "Address": address, "Website": web,
+                "Restaurant Phone": r_phone, "Google Rating": rating, "Map Link": map_l,
+                "Latitude":  lat_val if lat_val is not None else "",
+                "Longitude": lon_val if lon_val is not None else "",
+                "Primary Contact Name": p_name, "Primary Contact Role": p_role,
+                "Primary Contact Phone": p_phone, "Primary Contact Email": p_email,
+                "Decision Maker Name": dm_name, "Decision Maker Details": dm_details,
+                "Other Contact Name": o_name, "Other Contact Details": o_details,
+                "Current Brand": curr_b, "Bottle Type": b_type,
+                "Acquisition Cost (Excl GST)": acq_c, "Monthly Volume (Bottles)": m_vol,
+                "Competitor Contract Expiry": expiry, "Proposed APA SKU": prop_sku,
+                "Sample Delivery Date": sample_date, "Agreed Margin %": margin,
+                "Credit Terms": credit, "Lead Source": lead_src,
+                "Salesperson Name": salesperson, "Lead Status": status,
+                "Last Contacted": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Interaction Summary": notes, "Next Follow-up": next_f
             }
             if selected_rest != "-- Create New Blank Lead --":
                 df = df[df["Restaurant Name"] != selected_rest]
             df = pd.concat([df, pd.DataFrame([form_entry])], ignore_index=True)
-            
             conn.update(worksheet="Leads", data=df)
-            st.success(f"Saved '{r_name}' permanently to Google Sheets!")
-            time.sleep(1)
+            st.success(f"Saved '{r_name}' to Google Sheets!")
             st.rerun()
 
-# ── Tab 3: Bulk CSV Importer ──────────────────────────────────────────────────
+# ── Tab 3 ─────────────────────────────────────────────────────────────────────
+
 with tab3:
     st.subheader("📥 Bulk Import External Scraped Leads")
-    uploaded_file = st.file_uploader("Upload CSV Pipeline", type=["csv"])
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
     if uploaded_file is not None:
         try:
             import_df = pd.read_csv(uploaded_file)
             if "Restaurant Name" not in import_df.columns:
-                st.error("Invalid schema format: Missing 'Restaurant Name' header.")
+                st.error("Invalid format: Missing 'Restaurant Name' column.")
             else:
                 if st.button("⚡ Execute Bulk Append"):
                     imported_records = []
@@ -888,25 +973,30 @@ with tab3:
                     if imported_records:
                         df = pd.concat([df, pd.DataFrame(imported_records)], ignore_index=True)
                         conn.update(worksheet="Leads", data=df)
-                        st.success(f"Appended {len(imported_records)} records straight to Google Sheets.")
+                        st.success(f"Appended {len(imported_records)} new records to Google Sheets.")
                         time.sleep(1)
                         st.rerun()
                     else:
-                        st.warning("All entries within this file match existing records in the CRM database.")
+                        st.warning("All records already exist in the CRM.")
         except Exception as e:
-            st.error(f"File validation failure: {e}")
+            st.error(f"Parsing failure: {str(e)}")
 
-# ── Tab 4: 16-Node Grid Harvester ─────────────────────────────────────────────
+# ── Tab 4 ─────────────────────────────────────────────────────────────────────
+
 with tab4:
     st.subheader("🔍 Industrial 4×4 Deep Grid Harvester")
-    st.markdown("Deploys a **16-node coordinate grid** across a ~10km area. Each node paginates up to **3 pages × 20 results = 60 venues**.")
-    
+    st.markdown(
+        "Deploys a **16-node coordinate grid** across a ~10km area. "
+        "Each node paginates up to **3 pages × 20 results = 60 venues**. "
+        "Theoretical max per sweep: **960 unique venues**."
+    )
+
     city_selected = st.selectbox("Target City", list(CITY_AREA_MAP.keys()))
-    area_selected = st.selectbox("Neighbourhood Sector", CITY_AREA_MAP[city_selected])
+    area_selected = st.selectbox("Neighbourhood", CITY_AREA_MAP[city_selected])
     st.caption("ℹ️ 16 nodes × 3 pages × 20 results = up to **960 unique venues** | up to **48 API calls** per harvest")
 
-    # ── API Connection Tester ──
-    with st.expander("🔧 Test API Connection"):
+    # ── API Connection Tester ──────────────────────────────────────────────────
+    with st.expander("🔧 Test API Connection (run this first if getting zero results)"):
         if st.button("🧪 Run Single Node Test"):
             test_key = st.secrets.get("RAPIDAPI_KEY", "")
             if not test_key:
@@ -919,7 +1009,12 @@ with tab4:
                         "includedTypes": ["restaurant", "cafe", "bar"],
                         "maxResultCount": 3,
                         "rankPreference": "DISTANCE",
-                        "locationRestriction": {"circle": {"center": {"latitude": cfg["lat"], "longitude": cfg["lng"]}, "radius": 1500.0}},
+                        "locationRestriction": {
+                            "circle": {
+                                "center": {"latitude": cfg["lat"], "longitude": cfg["lng"]},
+                                "radius": 1500.0
+                            }
+                        },
                         "languageCode": "en"
                     }
                     test_headers = {
@@ -933,14 +1028,24 @@ with tab4:
                         st.markdown(f"**Status:** `{r.status_code}`")
                         st.json(r.json())
                         if r.status_code == 200:
-                            st.success("✅ Endpoint connection working properly.")
+                            places = r.json().get("places", [])
+                            if places:
+                                st.success(f"✅ searchNearby works — returned {len(places)} results. Safe to run full harvest.")
+                            else:
+                                st.warning("⚠️ 200 OK but empty places array — searchNearby may not be in your subscription plan.")
+                        elif r.status_code == 403:
+                            st.error("❌ 403 Forbidden — searchNearby endpoint not included in your RapidAPI subscription. Upgrade plan or switch endpoint.")
+                        elif r.status_code == 400:
+                            st.error("❌ 400 Bad Request — payload rejected. See response above for details.")
+                        else:
+                            st.error(f"❌ Unexpected status {r.status_code}.")
                     except Exception as e:
                         st.error(f"Request failed: {e}")
 
     if st.button("🚀 Execute 16-Node Grid Crawl"):
         active_key = st.secrets.get("RAPIDAPI_KEY", "")
         if not active_key:
-            st.error("Missing RAPIDAPI_KEY within application secrets configuration parameters.")
+            st.error("Missing RAPIDAPI_KEY in secrets.")
         else:
             scraped_results = execute_4x4_paginated_grid_sweep(active_key, city_selected, area_selected)
             if scraped_results:
@@ -952,18 +1057,19 @@ with tab4:
                         entry.update(item)
                         new_rows.append(entry)
                 if new_rows:
-                    # Pull latest records right before appends to protect data layers safely
                     try:
                         fresh_df = conn.read(worksheet="Leads", ttl=0)
                     except Exception:
                         fresh_df = df.copy()
-
                     df = pd.concat([fresh_df, pd.DataFrame(new_rows)], ignore_index=True)
                     conn.update(worksheet="Leads", data=df)
-                    st.success(f"✅ Securely appended **{len(new_rows)}** fresh leads without losing past data!")
+                    st.success(
+                        f"✅ Imported **{len(new_rows)}** new venues "
+                        f"({len(scraped_results) - len(new_rows)} already in CRM)."
+                    )
                     time.sleep(1)
                     st.rerun()
                 else:
-                    st.warning("All records recovered in this sweep sector already reside in your database tracker framework.")
+                    st.warning("All returned venues are already in the CRM for this area.")
             else:
-                st.error("Crawler pipeline yielded zero properties. Verify API subscriptions or target nodes maps config parameters.")
+                st.error("Zero results returned. Verify your RapidAPI key and subscription plan.")

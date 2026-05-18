@@ -1,6 +1,6 @@
 streamlit
 pandas
 requests
-beautifulsoup4
+pydeck
 st-gsheets-connection
 streamlit-aggrid
